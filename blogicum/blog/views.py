@@ -1,109 +1,117 @@
 from django.contrib.auth import get_user_model
-from django.db.models import Count
+from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
+from django.db.models import Count
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
-from django.contrib.auth.decorators import login_required
 
-from .models import Post, Category, Comment
 from .forms import CommentForm, PostForm, UserCreationModelForm, UserEditForm
+from .models import Category, Comment, Post
 
 User = get_user_model()
-PAGINATED_BY = 10
+POSTS_PER_PAGE = 10
+POST_RELATED_FIELDS = ('author', 'category', 'location')
 
 
-def paginate_queryset(queryset, request):
-    paginator = Paginator(queryset, PAGINATED_BY)
-    page_number = request.GET.get('page')
-    return paginator.get_page(page_number)
+def add_post_page(queryset, request):
+    paginator = Paginator(queryset, POSTS_PER_PAGE)
+    return paginator.get_page(request.GET.get('page'))
 
 
-def get_public_posts():
+def posts_with_details(queryset):
     return (
-        Post.objects.filter(
-            is_published=True,
-            pub_date__lte=timezone.now(),
-            category__is_published=True,
-        )
-        .select_related('author', 'category', 'location')
+        queryset.select_related(*POST_RELATED_FIELDS)
         .annotate(comment_count=Count('comments'))
         .order_by('-pub_date')
     )
 
 
-def is_post_public(post):
+def published_posts():
     return (
+        posts_with_details(Post.objects)
+        .filter(
+            is_published=True,
+            pub_date__lte=timezone.now(),
+            category__is_published=True,
+        )
+    )
+
+
+def author_posts(author, viewer):
+    if viewer == author:
+        return posts_with_details(Post.objects.filter(author=author))
+    return published_posts().filter(author=author)
+
+
+def post_is_visible(post, user):
+    visible_to_everyone = (
         post.is_published
         and post.pub_date <= timezone.now()
         and post.category is not None
         and post.category.is_published
     )
+    return post.author == user or visible_to_everyone
 
 
 def index(request):
-    page_obj = paginate_queryset(get_public_posts(), request)
-    return render(request, 'blog/index.html', {'page_obj': page_obj})
+    return render(
+        request,
+        'blog/index.html',
+        {'page_obj': add_post_page(published_posts(), request)},
+    )
 
 
 def post_detail(request, id):
     post = get_object_or_404(
-        Post.objects.select_related('author', 'category', 'location'),
+        Post.objects.select_related(*POST_RELATED_FIELDS),
         pk=id,
     )
 
-    if request.user != post.author and not is_post_public(post):
+    if not post_is_visible(post, request.user):
         raise Http404
 
-    comments = post.comments.select_related('author').order_by('created_at')
-    form = CommentForm()
     return render(
         request,
         'blog/detail.html',
         {
             'post': post,
-            'comments': comments,
-            'form': form,
+            'comments': post.comments.select_related('author'),
+            'form': CommentForm(),
         },
     )
 
 
 def category_posts(request, category_slug):
-    category = get_object_or_404(Category, slug=category_slug, is_published=True)
-    page_obj = paginate_queryset(
-        get_public_posts().filter(category=category),
-        request,
+    category = get_object_or_404(
+        Category,
+        slug=category_slug,
+        is_published=True,
     )
     return render(
         request,
         'blog/category.html',
         {
             'category': category,
-            'page_obj': page_obj,
+            'page_obj': add_post_page(
+                published_posts().filter(category=category),
+                request,
+            ),
         },
     )
 
 
 def profile(request, username):
     profile = get_object_or_404(User, username=username)
-
-    if request.user == profile:
-        posts = (
-            Post.objects.filter(author=profile)
-            .select_related('author', 'category', 'location')
-            .annotate(comment_count=Count('comments'))
-            .order_by('-pub_date')
-        )
-    else:
-        posts = get_public_posts().filter(author=profile)
-
-    page_obj = paginate_queryset(posts, request)
     return render(
         request,
         'blog/profile.html',
         {
             'profile': profile,
-            'page_obj': page_obj,
+            'page_obj': add_post_page(
+                author_posts(profile, request.user),
+                request,
+            ),
         },
     )
 
@@ -122,7 +130,11 @@ def registration(request):
     if form.is_valid():
         form.save()
         return redirect('login')
-    return render(request, 'registration/registration_form.html', {'form': form})
+    return render(
+        request,
+        'registration/registration_form.html',
+        {'form': form},
+    )
 
 
 @login_required

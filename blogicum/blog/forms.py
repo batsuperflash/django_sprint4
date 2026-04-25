@@ -7,6 +7,17 @@ from django.contrib.auth.forms import UserCreationForm
 from .models import Comment, Post
 
 User = get_user_model()
+DATE_FORMAT = '%Y-%m-%d'
+TIME_FORMAT = '%H:%M'
+
+
+def split_raw_datetime(value):
+    value = str(value).strip()
+    separator = 'T' if 'T' in value else ' '
+    if separator not in value:
+        return None
+    date_part, time_part = value.split(separator, 1)
+    return [date_part, time_part[:5]]
 
 
 class DateAndTimeSplitWidget(forms.SplitDateTimeWidget):
@@ -14,45 +25,42 @@ class DateAndTimeSplitWidget(forms.SplitDateTimeWidget):
         widgets = (
             forms.DateInput(
                 attrs={'type': 'date'},
-                format='%Y-%m-%d',
+                format=DATE_FORMAT,
             ),
             forms.TimeInput(
                 attrs={'type': 'time'},
-                format='%H:%M',
+                format=TIME_FORMAT,
             ),
         )
-        super().__init__(attrs=attrs, date_format='%Y-%m-%d', time_format='%H:%M')
+        super().__init__(
+            attrs=attrs,
+            date_format=DATE_FORMAT,
+            time_format=TIME_FORMAT,
+        )
         self.widgets = list(widgets)
 
     def value_from_datadict(self, data, files, name):
-        value = super().value_from_datadict(data, files, name)
-        if value and any(part for part in value):
-            return value
+        widget_value = super().value_from_datadict(data, files, name)
+        if widget_value and any(part for part in widget_value):
+            return widget_value
 
         raw_value = data.get(name)
         if raw_value in (None, ''):
-            return value
+            return widget_value
 
         if isinstance(raw_value, datetime):
             return [
-                raw_value.strftime('%Y-%m-%d'),
-                raw_value.strftime('%H:%M'),
+                raw_value.strftime(DATE_FORMAT),
+                raw_value.strftime(TIME_FORMAT),
             ]
 
-        raw_value = str(raw_value).strip()
-        if 'T' in raw_value:
-            date_part, time_part = raw_value.split('T', 1)
-            return [date_part, time_part[:5]]
-        if ' ' in raw_value:
-            date_part, time_part = raw_value.split(' ', 1)
-            return [date_part, time_part[:5]]
-        return value
+        return split_raw_datetime(raw_value) or widget_value
 
 
 class PostForm(forms.ModelForm):
     pub_date = forms.SplitDateTimeField(
-        input_date_formats=('%Y-%m-%d', '%d.%m.%Y'),
-        input_time_formats=('%H:%M', '%H:%M:%S'),
+        input_date_formats=(DATE_FORMAT, '%d.%m.%Y'),
+        input_time_formats=(TIME_FORMAT, '%H:%M:%S'),
         widget=DateAndTimeSplitWidget(),
     )
 
